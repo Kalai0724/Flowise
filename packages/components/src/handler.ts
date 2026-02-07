@@ -433,6 +433,89 @@ export class CustomChainHandler extends BaseCallbackHandler {
     }
 }
 
+class ChatflowAnalyticCallback extends BaseCallbackHandler {
+    name = 'chatflow_analytic_callback'
+
+    private analyticHandlers: AnalyticHandler
+    private parentTraceIds: ICommonObject
+    private nodeLabel: string
+    private llmRunMap: Record<string, ICommonObject> = {}
+
+    constructor(analyticHandlers: AnalyticHandler, parentTraceIds: ICommonObject, nodeData: INodeData) {
+        super()
+        this.analyticHandlers = analyticHandlers
+        this.parentTraceIds = parentTraceIds
+        this.nodeLabel = (nodeData?.inputs?.chainName as string) || nodeData?.label || nodeData?.name || 'LLMChain'
+    }
+
+    async handleLLMStart(_llm: any, prompts: any, runId: string): Promise<void> {
+        try {
+            const inputForAnalytics = Array.isArray(prompts) ? prompts : [prompts]
+            const llmIds = await this.analyticHandlers.onLLMStart(this.nodeLabel, inputForAnalytics, this.parentTraceIds)
+            this.llmRunMap[runId] = llmIds
+        } catch (e) {
+            if (process.env.DEBUG === 'true') {
+                // eslint-disable-next-line no-console
+                console.error('[analytics]: Error in ChatflowAnalyticCallback.handleLLMStart', e)
+            }
+        }
+    }
+
+    async handleLLMEnd(output: any, runId: string): Promise<void> {
+        const llmIds = this.llmRunMap[runId]
+        if (!llmIds) return
+
+        try {
+            let text = ''
+            if (output?.generations && Array.isArray(output.generations) && output.generations[0]?.text) {
+                text = output.generations[0].text
+            } else if (typeof output === 'string') {
+                text = output
+            }
+
+            const analyticsOutput: any = { text }
+
+            const llmOutput = (output as any)?.llmOutput
+            const tokenUsage = llmOutput?.tokenUsage || llmOutput?.estimatedTokenUsage
+
+            if (tokenUsage && typeof tokenUsage === 'object') {
+                const inputTokens = tokenUsage.input ?? tokenUsage.promptTokens ?? tokenUsage.input_tokens ?? tokenUsage.prompt_tokens ?? 0
+                const outputTokens =
+                    tokenUsage.output ?? tokenUsage.completionTokens ?? tokenUsage.output_tokens ?? tokenUsage.completion_tokens ?? 0
+                const totalTokens = tokenUsage.total ?? tokenUsage.totalTokens ?? tokenUsage.total_tokens ?? inputTokens + outputTokens
+
+                analyticsOutput.usageMetadata = {
+                    input_tokens: inputTokens,
+                    output_tokens: outputTokens,
+                    total_tokens: totalTokens
+                }
+            }
+
+            await this.analyticHandlers.onLLMEnd(llmIds, analyticsOutput)
+        } catch (e) {
+            if (process.env.DEBUG === 'true') {
+                // eslint-disable-next-line no-console
+                console.error('[analytics]: Error in ChatflowAnalyticCallback.handleLLMEnd', e)
+            }
+        }
+    }
+
+    async handleLLMError(err: any, runId: string): Promise<void> {
+        const llmIds = this.llmRunMap[runId]
+        if (!llmIds) return
+
+        try {
+            const message = err instanceof Error ? err.message : String(err)
+            await this.analyticHandlers.onLLMError(llmIds, message)
+        } catch (e) {
+            if (process.env.DEBUG === 'true') {
+                // eslint-disable-next-line no-console
+                console.error('[analytics]: Error in ChatflowAnalyticCallback.handleLLMError', e)
+            }
+        }
+    }
+}
+
 /*TODO - Add llamaIndex tracer to non evaluation runs*/
 class ExtendedLunaryHandler extends LunaryHandler {
     chatId: string
@@ -520,6 +603,14 @@ export const additionalCallbacks = async (nodeData: INodeData, options: ICommonO
         const analytic = JSON.parse(options.analytic)
         const callbacks: any = []
 
+        const analyticHandlers = options.analyticHandlers as AnalyticHandler | undefined
+        const parentTraceIds = options.parentTraceIds as ICommonObject | undefined
+
+        if (analyticHandlers && parentTraceIds) {
+            const bridgeHandler = new ChatflowAnalyticCallback(analyticHandlers, parentTraceIds, nodeData)
+            callbacks.push(bridgeHandler)
+        }
+
         for (const provider in analytic) {
             const providerStatus = analytic[provider].status as boolean
             if (providerStatus) {
@@ -549,6 +640,10 @@ export const additionalCallbacks = async (nodeData: INodeData, options: ICommonO
                     const tracer = new LangChainTracer(langSmithField)
                     callbacks.push(tracer)
                 } else if (provider === 'langFuse') {
+                    // If AnalyticHandler is provided, rely on it for Langfuse rather than langfuse-langchain
+                    if (analyticHandlers && parentTraceIds) {
+                        continue
+                    }
                     const release = analytic[provider].release as string
 
                     const langFuseSecretKey = getCredentialParam('langFuseSecretKey', credentialData, nodeData)
@@ -559,7 +654,10 @@ export const additionalCallbacks = async (nodeData: INodeData, options: ICommonO
                         secretKey: langFuseSecretKey,
                         publicKey: langFusePublicKey,
                         baseUrl: langFuseEndpoint ?? 'https://cloud.langfuse.com',
-                        sdkIntegration: 'Flowise'
+                        sdkIntegration: 'Flowise',
+                        // Default tags/metadata for chatflows using LangChain callbacks
+                        tags: ['openai-assistant'],
+                        metadata: { tags: ['openai-assistant'] }
                     }
                     if (release) langFuseOptions.release = release
                     if (options.chatId) langFuseOptions.sessionId = options.chatId
@@ -1400,13 +1498,16 @@ export class AnalyticHandler {
         return returnIds
     }
 
-    async onLLMEnd(returnIds: ICommonObject, output: string) {
+    async onLLMEnd(returnIds: ICommonObject, output: string | object) {
+        // Normalize output to a plain string for providers that only care about text
+        const outputValueForText = typeof output === 'object' && (output as any)?.text ? (output as any).text : output
+
         if (Object.prototype.hasOwnProperty.call(this.handlers, 'langSmith')) {
             const llmRun: RunTree | undefined = this.handlers['langSmith'].llmRun[returnIds['langSmith'].llmRun]
             if (llmRun) {
                 await llmRun.end({
                     outputs: {
-                        generations: [output]
+                        generations: [outputValueForText]
                     }
                 })
                 await llmRun.patchRun()
@@ -1416,9 +1517,45 @@ export class AnalyticHandler {
         if (Object.prototype.hasOwnProperty.call(this.handlers, 'langFuse')) {
             const generation: LangfuseGenerationClient | undefined = this.handlers['langFuse'].generation[returnIds['langFuse'].generation]
             if (generation) {
-                generation.end({
-                    output: output
-                })
+                const endPayload: any = {
+                    output: outputValueForText
+                }
+
+                // If usage metadata is available (e.g. Gemini), map it into Langfuse usage
+                const usageMetadata =
+                    typeof output === 'object' && (output as any)?.usageMetadata ? (output as any).usageMetadata : undefined
+
+                if (usageMetadata) {
+                    // Support multiple provider-specific usage shapes, including Gemini's *_token_count
+                    const promptTokens =
+                        usageMetadata.prompt_tokens ??
+                        usageMetadata.input_tokens ??
+                        usageMetadata.input ??
+                        usageMetadata.prompt_token_count ??
+                        usageMetadata.input_token_count ??
+                        0
+                    const completionTokens =
+                        usageMetadata.completion_tokens ??
+                        usageMetadata.output_tokens ??
+                        usageMetadata.output ??
+                        usageMetadata.candidates_token_count ??
+                        usageMetadata.completion_token_count ??
+                        0
+                    const totalTokens =
+                        usageMetadata.total_tokens ??
+                        usageMetadata.total ??
+                        usageMetadata.total_token_count ??
+                        promptTokens + completionTokens
+
+                    endPayload.usage = {
+                        input: promptTokens,
+                        output: completionTokens,
+                        total: totalTokens,
+                        unit: 'TOKENS'
+                    }
+                }
+
+                generation.end(endPayload)
             }
         }
 
@@ -1429,7 +1566,7 @@ export class AnalyticHandler {
             if (monitor && llmEventId) {
                 await monitor.trackEvent('llm', 'end', {
                     runId: llmEventId,
-                    output
+                    output: outputValueForText
                 })
             }
         }
@@ -1438,7 +1575,7 @@ export class AnalyticHandler {
             const span: LangWatchSpan | undefined = this.handlers['langWatch'].span[returnIds['langWatch'].span]
             if (span) {
                 span.end({
-                    output: autoconvertTypedValues(output)
+                    output: autoconvertTypedValues(outputValueForText)
                 })
             }
         }
@@ -1446,7 +1583,7 @@ export class AnalyticHandler {
         if (Object.prototype.hasOwnProperty.call(this.handlers, 'arize')) {
             const llmSpan: Span | undefined = this.handlers['arize'].llmSpan[returnIds['arize'].llmSpan]
             if (llmSpan) {
-                llmSpan.setAttribute('output.value', JSON.stringify(output))
+                llmSpan.setAttribute('output.value', JSON.stringify(outputValueForText))
                 llmSpan.setAttribute('output.mime_type', 'application/json')
                 llmSpan.setStatus({ code: SpanStatusCode.OK })
                 llmSpan.end()
@@ -1456,7 +1593,7 @@ export class AnalyticHandler {
         if (Object.prototype.hasOwnProperty.call(this.handlers, 'phoenix')) {
             const llmSpan: Span | undefined = this.handlers['phoenix'].llmSpan[returnIds['phoenix'].llmSpan]
             if (llmSpan) {
-                llmSpan.setAttribute('output.value', JSON.stringify(output))
+                llmSpan.setAttribute('output.value', JSON.stringify(outputValueForText))
                 llmSpan.setAttribute('output.mime_type', 'application/json')
                 llmSpan.setStatus({ code: SpanStatusCode.OK })
                 llmSpan.end()
@@ -1466,7 +1603,7 @@ export class AnalyticHandler {
         if (Object.prototype.hasOwnProperty.call(this.handlers, 'opik')) {
             const llmSpan: Span | undefined = this.handlers['opik'].llmSpan[returnIds['opik'].llmSpan]
             if (llmSpan) {
-                llmSpan.setAttribute('output.value', JSON.stringify(output))
+                llmSpan.setAttribute('output.value', JSON.stringify(outputValueForText))
                 llmSpan.setAttribute('output.mime_type', 'application/json')
                 llmSpan.setStatus({ code: SpanStatusCode.OK })
                 llmSpan.end()

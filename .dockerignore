@@ -8,3 +8,101 @@ build
 
 packages/server/.env
 packages/ui/.env
+
+
+# Editor
+.idea
+.vscode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/*.code-snippets
+.history/
+
+# Dependencies
+**/node_modules
+**/package-lock.json
+**/yarn.lock
+.pnpm-store/
+
+# Build artifacts
+**/dist
+**/build
+.turbo
+
+# Logs
+**/logs
+**/*.log
+
+# Temp
+**/tmp
+**/temp
+
+# Tests / coverage
+**/coverage
+
+# OS / misc
+.DS_Store
+
+# Env files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Uploads
+**/uploads
+
+# Compressed
+**/*.tgz
+
+# Secrets / keys
+**/*.key
+**/api.json
+*.key
+*.keys
+*.priv
+*.rsa
+*.key.json
+*.ssh
+*.ssh-key
+.key-mrc
+*.ca
+*.crt
+*.csr
+*.der
+*.kdb
+*.org
+*.p12
+*.pem
+*.rnd
+*.ssleay
+*.smime
+*.vsix
+
+# ─────────────────────────────
+# Python (flowise-agentflow)
+# ─────────────────────────────
+**/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.env.py
+.mypy_cache/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Proprietary / OSS split
+extensions/
+
+# Only allow apps/oss-app, ignore all other apps
+apps/*/
+!apps/oss-app/

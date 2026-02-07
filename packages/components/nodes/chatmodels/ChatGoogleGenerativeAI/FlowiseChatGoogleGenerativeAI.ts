@@ -801,9 +801,13 @@ export class LangchainChatGoogleGenerativeAI
 
         // Handle streaming
         if (this.streaming) {
-            const tokenUsage: TokenUsage = {}
             const stream = this._streamResponseChunks(messages, options, runManager)
             const finalChunks: Record<number, ChatGenerationChunk> = {}
+
+            // Aggregate token usage across all streamed chunks
+            let inputTokens = 0
+            let outputTokens = 0
+            let totalTokens = 0
 
             for await (const chunk of stream) {
                 const index = (chunk.generationInfo as NewTokenIndices)?.completion ?? 0
@@ -812,10 +816,24 @@ export class LangchainChatGoogleGenerativeAI
                 } else {
                     finalChunks[index] = finalChunks[index].concat(chunk)
                 }
+
+                const usageMetadata = (chunk.message as any)?.usage_metadata as UsageMetadata | undefined
+                if (usageMetadata) {
+                    inputTokens += usageMetadata.input_tokens ?? 0
+                    outputTokens += usageMetadata.output_tokens ?? 0
+                    totalTokens += usageMetadata.total_tokens ?? 0
+                }
             }
+
             const generations = Object.entries(finalChunks)
                 .sort(([aKey], [bKey]) => parseInt(aKey, 10) - parseInt(bKey, 10))
                 .map(([_, value]) => value)
+
+            const tokenUsage: TokenUsage = {
+                promptTokens: inputTokens,
+                completionTokens: outputTokens,
+                totalTokens
+            }
 
             return { generations, llmOutput: { estimatedTokenUsage: tokenUsage } }
         }

@@ -1388,9 +1388,15 @@ class Agent_Agentflow implements INode {
                 isStructuredOutput
             )
 
-            // End analytics tracking
+            // End analytics tracking (include usage metadata so observability tools can show tokens)
             if (analyticHandlers && llmIds) {
-                await analyticHandlers.onLLMEnd(llmIds, finalResponse)
+                const analyticsOutput: any = {
+                    text: finalResponse
+                }
+                if (output?.usageMetadata) {
+                    analyticsOutput.usageMetadata = output.usageMetadata
+                }
+                await analyticHandlers.onLLMEnd(llmIds, analyticsOutput)
             }
 
             // Send additional streaming events if needed

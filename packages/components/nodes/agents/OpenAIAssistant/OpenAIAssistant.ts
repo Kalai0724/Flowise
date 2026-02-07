@@ -629,7 +629,15 @@ class OpenAIAssistant_Agents implements INode {
                 let llmOutput = text.replace(imageRegex, '')
                 llmOutput = llmOutput.replace('<br/>', '')
 
-                await analyticHandlers.onLLMEnd(llmIds, llmOutput)
+                const analyticsOutput: any = {
+                    text: llmOutput
+                }
+                const lastAssistantMsg = assistantMessages[0] as any
+                if (lastAssistantMsg?.usage_metadata) {
+                    analyticsOutput.usageMetadata = lastAssistantMsg.usage_metadata
+                }
+
+                await analyticHandlers.onLLMEnd(llmIds, analyticsOutput)
                 await analyticHandlers.onChainEnd(parentIds, messageData, true)
 
                 return {
@@ -919,7 +927,15 @@ class OpenAIAssistant_Agents implements INode {
             let llmOutput = returnVal.replace(imageRegex, '')
             llmOutput = llmOutput.replace('<br/>', '')
 
-            await analyticHandlers.onLLMEnd(llmIds, llmOutput)
+            const analyticsOutput: any = {
+                text: llmOutput
+            }
+            const lastAssistantMsg = messageData.find((msg) => msg.role === 'assistant') as any
+            if (lastAssistantMsg?.usage_metadata) {
+                analyticsOutput.usageMetadata = lastAssistantMsg.usage_metadata
+            }
+
+            await analyticHandlers.onLLMEnd(llmIds, analyticsOutput)
             await analyticHandlers.onChainEnd(parentIds, messageData, true)
 
             return {

@@ -527,13 +527,23 @@ export function mapGenerateContentResultToChatResult(
         generationInfo
     }
 
+    const inputTokens = extra?.usageMetadata?.input_tokens ?? 0
+    const outputTokens = extra?.usageMetadata?.output_tokens ?? 0
+    const totalTokens = extra?.usageMetadata?.total_tokens ?? inputTokens + outputTokens
+
     return {
         generations: [generation],
         llmOutput: {
             tokenUsage: {
-                promptTokens: extra?.usageMetadata?.input_tokens,
-                completionTokens: extra?.usageMetadata?.output_tokens,
-                totalTokens: extra?.usageMetadata?.total_tokens
+                // Existing fields used elsewhere in Flowise (e.g. evaluation)
+                promptTokens: inputTokens,
+                completionTokens: outputTokens,
+                totalTokens,
+                // Additional fields so Langfuse can correctly interpret token usage
+                input: inputTokens,
+                output: outputTokens,
+                total: totalTokens,
+                unit: 'TOKENS'
             }
         }
     }

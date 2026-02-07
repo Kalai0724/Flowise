@@ -4,6 +4,7 @@ import { DataSource } from 'typeorm'
 import { v4 as uuidv4 } from 'uuid'
 import { omit, cloneDeep } from 'lodash'
 import {
+    AnalyticHandler,
     IFileUpload,
     convertSpeechToText,
     convertTextToSpeechStream,
@@ -763,6 +764,28 @@ export const executeFlow = async ({
         const finalQuestion = uploadedFilesContent ? `${uploadedFilesContent}\n\n${incomingInput.question}` : incomingInput.question
 
         /*** Prepare run params ***/
+        let analyticHandlers: AnalyticHandler | undefined
+        let parentTraceIds: ICommonObject | undefined
+
+        try {
+            if (chatflow.analytic) {
+                let analyticInputs: ICommonObject = {}
+                analyticHandlers = AnalyticHandler.getInstance({ inputs: { analytics: analyticInputs } } as any, {
+                    orgId,
+                    workspaceId,
+                    appDataSource,
+                    databaseEntities,
+                    componentNodes,
+                    analytic: chatflow.analytic,
+                    chatId
+                })
+                await analyticHandlers.init()
+                parentTraceIds = await analyticHandlers.onChainStart('Chatflow', finalQuestion || '')
+            }
+        } catch (error) {
+            logger.error(`[server]: Error initializing analytic handlers for chatflow: ${getErrorMessage(error)}`)
+        }
+
         const runParams = {
             orgId,
             workspaceId,
@@ -775,6 +798,8 @@ export const executeFlow = async ({
             databaseEntities,
             usageCacheManager,
             analytic: chatflow.analytic,
+            analyticHandlers,
+            parentTraceIds,
             uploads,
             prependMessages,
             ...(isStreamValid && { sseStreamer, shouldStreamResponse: isStreamValid }),
